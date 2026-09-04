@@ -326,7 +326,16 @@ func (s *AppServer) handleSearchFeeds(ctx context.Context, args SearchFeedsArgs)
 		Location:    args.Filters.Location,
 	}
 
-	result, err := s.xiaohongshuService.SearchFeeds(ctx, args.Keyword, filter)
+	hasFilter := filter.SortBy != "" || filter.NoteType != "" ||
+		filter.PublishTime != "" || filter.SearchScope != "" || filter.Location != ""
+
+	var result *FeedsListResponse
+	var err error
+	if hasFilter {
+		result, err = s.xiaohongshuService.SearchFeeds(ctx, args.Keyword, filter)
+	} else {
+		result, err = s.xiaohongshuService.SearchFeeds(ctx, args.Keyword)
+	}
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
