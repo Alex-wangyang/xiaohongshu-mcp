@@ -315,7 +315,7 @@ func (s *AppServer) handleSearchFeeds(ctx context.Context, args SearchFeedsArgs)
 		}
 	}
 
-	logrus.Infof("MCP: 搜索Feeds - 关键词: %s", args.Keyword)
+	logrus.Info("MCP: 搜索Feeds - 参数已接收")
 
 	// 将 MCP 的 FilterOption 转换为 xiaohongshu.FilterOption
 	filter := xiaohongshu.FilterOption{
@@ -511,7 +511,7 @@ func (s *AppServer) handleUserProfile(ctx context.Context, args map[string]any) 
 		}
 	}
 
-	logrus.Infof("MCP: 获取用户主页 - User ID: %s", userID)
+	logrus.Info("MCP: 获取用户主页 - 参数已接收")
 
 	result, err := s.xiaohongshuService.UserProfile(ctx, userID, xsecToken)
 	if err != nil {

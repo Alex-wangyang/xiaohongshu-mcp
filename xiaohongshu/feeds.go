@@ -11,25 +11,44 @@ import (
 )
 
 type FeedsListAction struct {
-	page *rod.Page
+	read browserReadAction
 }
 
 func NewFeedsListAction(page *rod.Page) *FeedsListAction {
-	pp := page.Timeout(60 * time.Second)
-
-	pp.MustNavigate("https://www.xiaohongshu.com")
-	pp.MustWaitDOMStable()
-
-	return &FeedsListAction{page: pp}
+	return &FeedsListAction{read: newBrowserReadAction(readOperationListFeeds, page)}
 }
 
 // GetFeedsList 获取页面的 Feed 列表数据
 func (f *FeedsListAction) GetFeedsList(ctx context.Context) ([]Feed, error) {
-	page := f.page.Context(ctx)
+	session := f.read.begin(ctx)
+	defer session.close()
 
-	time.Sleep(1 * time.Second)
+	if err := session.run(readStageNavigate, func(page *rod.Page) error {
+		return page.Navigate("https://www.xiaohongshu.com")
+	}); err != nil {
+		return nil, err
+	}
+	if err := session.run(readStageWaitDOMStable, func(page *rod.Page) error {
+		return page.WaitDOMStable(time.Second, 0)
+	}); err != nil {
+		return nil, err
+	}
+	if err := session.run(readStageSettle, func(page *rod.Page) error {
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			return nil
+		case <-page.GetContext().Done():
+			return page.GetContext().Err()
+		}
+	}); err != nil {
+		return nil, err
+	}
 
-	result := page.MustEval(`() => {
+	var result string
+	if err := session.run(readStageExtract, func(page *rod.Page) error {
+		remote, err := page.Eval(`() => {
 		if (window.__INITIAL_STATE__ &&
 		    window.__INITIAL_STATE__.feed &&
 		    window.__INITIAL_STATE__.feed.feeds) {
@@ -40,15 +59,27 @@ func (f *FeedsListAction) GetFeedsList(ctx context.Context) ([]Feed, error) {
 			}
 		}
 		return "";
-	}`).String()
-
-	if result == "" {
-		return nil, errors.ErrNoFeeds
+	}`)
+		if err != nil {
+			return err
+		}
+		result = remote.Value.String()
+		if result == "" {
+			return errors.ErrNoFeeds
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	var feeds []Feed
-	if err := json.Unmarshal([]byte(result), &feeds); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal feeds: %w", err)
+	if err := session.run(readStageDecode, func(_ *rod.Page) error {
+		if err := json.Unmarshal([]byte(result), &feeds); err != nil {
+			return fmt.Errorf("failed to unmarshal feeds: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	return feeds, nil

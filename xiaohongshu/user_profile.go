@@ -10,30 +10,44 @@ import (
 )
 
 type UserProfileAction struct {
-	page *rod.Page
+	read browserReadAction
 }
 
 func NewUserProfileAction(page *rod.Page) *UserProfileAction {
-	pp := page.Timeout(60 * time.Second)
-	return &UserProfileAction{page: pp}
+	return &UserProfileAction{read: newBrowserReadAction(readOperationUserProfile, page)}
 }
 
 // UserProfile 获取用户基本信息及帖子
 func (u *UserProfileAction) UserProfile(ctx context.Context, userID, xsecToken string) (*UserProfileResponse, error) {
-	page := u.page.Context(ctx)
+	session := u.read.begin(ctx)
+	defer session.close()
 
 	searchURL := makeUserProfileURL(userID, xsecToken)
-	page.MustNavigate(searchURL)
-	page.MustWaitStable()
+	if err := session.run(readStageNavigate, func(page *rod.Page) error {
+		return page.Navigate(searchURL)
+	}); err != nil {
+		return nil, err
+	}
+	if err := session.run(readStageWaitStable, func(page *rod.Page) error {
+		return page.WaitStable(time.Second)
+	}); err != nil {
+		return nil, err
+	}
 
-	return u.extractUserProfileData(page)
+	return u.extractUserProfileData(session)
 }
 
 // extractUserProfileData 从页面中提取用户资料数据的通用方法
-func (u *UserProfileAction) extractUserProfileData(page *rod.Page) (*UserProfileResponse, error) {
-	page.MustWait(`() => window.__INITIAL_STATE__ !== undefined`)
+func (u *UserProfileAction) extractUserProfileData(session *browserReadSession) (*UserProfileResponse, error) {
+	if err := session.run(readStageWaitInitialState, func(page *rod.Page) error {
+		return page.Wait(rod.Eval(`() => window.__INITIAL_STATE__ !== undefined`))
+	}); err != nil {
+		return nil, err
+	}
 
-	userDataResult := page.MustEval(`() => {
+	var userDataResult string
+	if err := session.run(readStageExtractProfile, func(page *rod.Page) error {
+		remote, err := page.Eval(`() => {
 		if (window.__INITIAL_STATE__ &&
 		    window.__INITIAL_STATE__.user &&
 		    window.__INITIAL_STATE__.user.userPageData) {
@@ -44,14 +58,23 @@ func (u *UserProfileAction) extractUserProfileData(page *rod.Page) (*UserProfile
 			}
 		}
 		return "";
-	}`).String()
-
-	if userDataResult == "" {
-		return nil, fmt.Errorf("user.userPageData.value not found in __INITIAL_STATE__")
+	}`)
+		if err != nil {
+			return err
+		}
+		userDataResult = remote.Value.String()
+		if userDataResult == "" {
+			return fmt.Errorf("profile data is missing")
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	// 2. 获取用户帖子：window.__INITIAL_STATE__.user.notes.value
-	notesResult := page.MustEval(`() => {
+	var notesResult string
+	if err := session.run(readStageExtractNotes, func(page *rod.Page) error {
+		remote, err := page.Eval(`() => {
 		if (window.__INITIAL_STATE__ &&
 		    window.__INITIAL_STATE__.user &&
 		    window.__INITIAL_STATE__.user.notes) {
@@ -63,10 +86,17 @@ func (u *UserProfileAction) extractUserProfileData(page *rod.Page) (*UserProfile
 			}
 		}
 		return "";
-	}`).String()
-
-	if notesResult == "" {
-		return nil, fmt.Errorf("user.notes.value not found in __INITIAL_STATE__")
+	}`)
+		if err != nil {
+			return err
+		}
+		notesResult = remote.Value.String()
+		if notesResult == "" {
+			return fmt.Errorf("profile notes are missing")
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	// 解析用户信息
@@ -74,14 +104,17 @@ func (u *UserProfileAction) extractUserProfileData(page *rod.Page) (*UserProfile
 		Interactions []UserInteractions `json:"interactions"`
 		BasicInfo    UserBasicInfo      `json:"basicInfo"`
 	}
-	if err := json.Unmarshal([]byte(userDataResult), &userPageData); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal userPageData: %w", err)
-	}
-
-	// 解析帖子数据（帖子为双重数组）
 	var notesFeeds [][]Feed
-	if err := json.Unmarshal([]byte(notesResult), &notesFeeds); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal notes: %w", err)
+	if err := session.run(readStageDecode, func(_ *rod.Page) error {
+		if err := json.Unmarshal([]byte(userDataResult), &userPageData); err != nil {
+			return fmt.Errorf("failed to unmarshal userPageData: %w", err)
+		}
+		if err := json.Unmarshal([]byte(notesResult), &notesFeeds); err != nil {
+			return fmt.Errorf("failed to unmarshal notes: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	// 组装响应
@@ -105,18 +138,25 @@ func makeUserProfileURL(userID, xsecToken string) string {
 }
 
 func (u *UserProfileAction) GetMyProfileViaSidebar(ctx context.Context) (*UserProfileResponse, error) {
-	page := u.page.Context(ctx)
+	session := u.read.begin(ctx)
+	defer session.close()
 
 	// 创建导航动作
-	navigate := NewNavigate(page)
+	navigate := NewNavigate(session.page)
 
 	// 通过侧边栏导航到个人主页
-	if err := navigate.ToProfilePage(ctx); err != nil {
-		return nil, fmt.Errorf("failed to navigate to profile page via sidebar: %w", err)
+	if err := session.run(readStageNavigate, func(_ *rod.Page) error {
+		return navigate.ToProfilePage(session.ctx)
+	}); err != nil {
+		return nil, err
 	}
 
 	// 等待页面加载完成并获取 __INITIAL_STATE__
-	page.MustWaitStable()
+	if err := session.run(readStageWaitStable, func(page *rod.Page) error {
+		return page.WaitStable(time.Second)
+	}); err != nil {
+		return nil, err
+	}
 
-	return u.extractUserProfileData(page)
+	return u.extractUserProfileData(session)
 }

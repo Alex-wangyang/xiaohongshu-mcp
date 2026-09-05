@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/xpzouying/xiaohongshu-mcp/errors"
 )
 
@@ -156,65 +157,104 @@ func validateInternalFilterOption(filter internalFilterOption) error {
 }
 
 type SearchAction struct {
-	page *rod.Page
+	read browserReadAction
 }
 
 func NewSearchAction(page *rod.Page) *SearchAction {
-	pp := page.Timeout(60 * time.Second)
-
-	return &SearchAction{page: pp}
+	return &SearchAction{read: newBrowserReadAction(readOperationSearchFeeds, page)}
 }
 
 func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...FilterOption) ([]Feed, error) {
-	page := s.page.Context(ctx)
+	session := s.read.begin(ctx)
+	defer session.close()
 
-	searchURL := makeSearchURL(keyword)
-	page.MustNavigate(searchURL)
-	page.MustWaitStable()
-
-	page.MustWait(`() => window.__INITIAL_STATE__ !== undefined`)
-
-	// 如果有筛选条件，则应用筛选
-	if len(filters) > 0 {
-		// 将所有 FilterOption 转换为内部筛选选项
-		var allInternalFilters []internalFilterOption
+	var allInternalFilters []internalFilterOption
+	if err := session.run(readStagePrepareFilters, func(_ *rod.Page) error {
 		for _, filter := range filters {
 			internalFilters, err := convertToInternalFilters(filter)
 			if err != nil {
-				return nil, fmt.Errorf("筛选选项转换失败: %w", err)
+				return &invalidReadInputError{cause: err}
 			}
 			allInternalFilters = append(allInternalFilters, internalFilters...)
 		}
-
-		// 验证所有内部筛选选项
 		for _, filter := range allInternalFilters {
 			if err := validateInternalFilterOption(filter); err != nil {
-				return nil, fmt.Errorf("筛选选项验证失败: %w", err)
+				return &invalidReadInputError{cause: err}
 			}
 		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 
+	searchURL := makeSearchURL(keyword)
+	if err := session.run(readStageNavigate, func(page *rod.Page) error {
+		return page.Navigate(searchURL)
+	}); err != nil {
+		return nil, err
+	}
+	if err := session.run(readStageWaitStable, func(page *rod.Page) error {
+		return page.WaitStable(time.Second)
+	}); err != nil {
+		return nil, err
+	}
+	if err := session.run(readStageWaitInitialState, func(page *rod.Page) error {
+		return page.Wait(rod.Eval(`() => window.__INITIAL_STATE__ !== undefined`))
+	}); err != nil {
+		return nil, err
+	}
+
+	// 如果有筛选条件，则应用筛选
+	if len(allInternalFilters) > 0 {
 		// 悬停在筛选按钮上
-		filterButton := page.MustElement(`div.filter`)
-		filterButton.MustHover()
-
-		// 等待筛选面板出现
-		page.MustWait(`() => document.querySelector('div.filter-panel') !== null`)
+		if err := session.run(readStageOpenFilters, func(page *rod.Page) error {
+			filterButton, err := page.Element(`div.filter`)
+			if err != nil {
+				return err
+			}
+			if err := filterButton.Hover(); err != nil {
+				return err
+			}
+			return page.Wait(rod.Eval(`() => document.querySelector('div.filter-panel') !== null`))
+		}); err != nil {
+			return nil, err
+		}
 
 		// 应用所有筛选条件
-		for _, filter := range allInternalFilters {
-			selector := fmt.Sprintf(`div.filter-panel div.filters:nth-child(%d) div.tags:nth-child(%d)`,
-				filter.FiltersIndex, filter.TagsIndex)
-			option := page.MustElement(selector)
-			option.MustClick()
+		if err := session.run(readStageApplyFilters, func(page *rod.Page) error {
+			for _, filter := range allInternalFilters {
+				selector := fmt.Sprintf(`div.filter-panel div.filters:nth-child(%d) div.tags:nth-child(%d)`,
+					filter.FiltersIndex, filter.TagsIndex)
+				option, err := page.Element(selector)
+				if err != nil {
+					return err
+				}
+				if err := option.Click(proto.InputMouseButtonLeft, 1); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			return nil, err
 		}
 
 		// 等待页面更新
-		page.MustWaitStable()
+		if err := session.run(readStageWaitFilteredStable, func(page *rod.Page) error {
+			return page.WaitStable(time.Second)
+		}); err != nil {
+			return nil, err
+		}
 		// 重新等待 __INITIAL_STATE__ 更新
-		page.MustWait(`() => window.__INITIAL_STATE__ !== undefined`)
+		if err := session.run(readStageWaitFilteredState, func(page *rod.Page) error {
+			return page.Wait(rod.Eval(`() => window.__INITIAL_STATE__ !== undefined`))
+		}); err != nil {
+			return nil, err
+		}
 	}
 
-	result := page.MustEval(`() => {
+	var result string
+	if err := session.run(readStageExtract, func(page *rod.Page) error {
+		remote, err := page.Eval(`() => {
 		if (window.__INITIAL_STATE__ &&
 		    window.__INITIAL_STATE__.search &&
 		    window.__INITIAL_STATE__.search.feeds) {
@@ -225,15 +265,27 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 			}
 		}
 		return "";
-	}`).String()
-
-	if result == "" {
-		return nil, errors.ErrNoFeeds
+	}`)
+		if err != nil {
+			return err
+		}
+		result = remote.Value.String()
+		if result == "" {
+			return errors.ErrNoFeeds
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	var feeds []Feed
-	if err := json.Unmarshal([]byte(result), &feeds); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal feeds: %w", err)
+	if err := session.run(readStageDecode, func(_ *rod.Page) error {
+		if err := json.Unmarshal([]byte(result), &feeds); err != nil {
+			return fmt.Errorf("failed to unmarshal feeds: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	return feeds, nil
