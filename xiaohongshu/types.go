@@ -30,10 +30,16 @@ type Feed struct {
 type NoteCard struct {
 	Type         string       `json:"type"`
 	DisplayTitle string       `json:"displayTitle"`
-	User         User         `json:"user"`
+	User         FeedUser     `json:"user"`
 	InteractInfo InteractInfo `json:"interactInfo"`
 	Cover        Cover        `json:"cover"`
 	Video        *Video       `json:"video,omitempty"` // 视频内容，可能为空
+}
+
+// FeedUser retains the author token needed for a feed-author profile read.
+type FeedUser struct {
+	User
+	XsecToken string `json:"xsecToken,omitempty"`
 }
 
 // User 表示用户信息
