@@ -28,13 +28,25 @@ func (u *UserProfileAction) UserProfile(ctx context.Context, userID, xsecToken s
 	}); err != nil {
 		return nil, err
 	}
-	if err := session.run(readStageWaitStable, func(page *rod.Page) error {
-		return page.WaitStable(time.Second)
+
+	var snapshot string
+	if err := session.run(readStageWaitInitialState, func(page *rod.Page) error {
+		var err error
+		snapshot, err = awaitSearchReady(session.ctx, rodProfileReadPage{page: page}, userID)
+		return err
 	}); err != nil {
 		return nil, err
 	}
 
-	return u.extractUserProfileData(session)
+	var response *UserProfileResponse
+	if err := session.run(readStageDecode, func(_ *rod.Page) error {
+		var err error
+		response, err = decodeProfileReadySnapshot(snapshot)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
 // extractUserProfileData 从页面中提取用户资料数据的通用方法
