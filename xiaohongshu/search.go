@@ -193,19 +193,20 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 	}); err != nil {
 		return nil, err
 	}
-	if err := session.run(readStageWaitStable, func(page *rod.Page) error {
-		return page.WaitStable(time.Second)
-	}); err != nil {
-		return nil, err
-	}
-	if err := session.run(readStageWaitInitialState, func(page *rod.Page) error {
-		return page.Wait(rod.Eval(`() => window.__INITIAL_STATE__ !== undefined`))
-	}); err != nil {
-		return nil, err
-	}
 
 	// 如果有筛选条件，则应用筛选
 	if len(allInternalFilters) > 0 {
+		if err := session.run(readStageWaitStable, func(page *rod.Page) error {
+			return page.WaitStable(time.Second)
+		}); err != nil {
+			return nil, err
+		}
+		if err := session.run(readStageWaitInitialState, func(page *rod.Page) error {
+			return page.Wait(rod.Eval(`() => window.__INITIAL_STATE__ !== undefined`))
+		}); err != nil {
+			return nil, err
+		}
+
 		// 悬停在筛选按钮上
 		if err := session.run(readStageOpenFilters, func(page *rod.Page) error {
 			filterButton, err := page.Element(`div.filter`)
@@ -253,29 +254,39 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 	}
 
 	var result string
-	if err := session.run(readStageExtract, func(page *rod.Page) error {
-		remote, err := page.Eval(`() => {
-		if (window.__INITIAL_STATE__ &&
-		    window.__INITIAL_STATE__.search &&
-		    window.__INITIAL_STATE__.search.feeds) {
-			const feeds = window.__INITIAL_STATE__.search.feeds;
-			const feedsData = feeds.value !== undefined ? feeds.value : feeds._value;
-			if (feedsData) {
-				return JSON.stringify(feedsData);
-			}
-		}
-		return "";
-	}`)
-		if err != nil {
+	if len(allInternalFilters) == 0 {
+		if err := session.run(readStageWaitInitialState, func(page *rod.Page) error {
+			var err error
+			result, err = awaitSearchReady(session.ctx, rodSearchReadPage{page: page}, keyword)
 			return err
+		}); err != nil {
+			return nil, err
 		}
-		result = remote.Value.String()
-		if result == "" {
-			return errors.ErrNoFeeds
+	} else {
+		if err := session.run(readStageExtract, func(page *rod.Page) error {
+			remote, err := page.Eval(`() => {
+			if (window.__INITIAL_STATE__ &&
+			    window.__INITIAL_STATE__.search &&
+			    window.__INITIAL_STATE__.search.feeds) {
+				const feeds = window.__INITIAL_STATE__.search.feeds;
+				const feedsData = feeds.value !== undefined ? feeds.value : feeds._value;
+				if (feedsData) {
+					return JSON.stringify(feedsData);
+				}
+			}
+			return "";
+		}`)
+			if err != nil {
+				return err
+			}
+			result = remote.Value.String()
+			if result == "" {
+				return errors.ErrNoFeeds
+			}
+			return nil
+		}); err != nil {
+			return nil, err
 		}
-		return nil
-	}); err != nil {
-		return nil, err
 	}
 
 	var feeds []Feed
