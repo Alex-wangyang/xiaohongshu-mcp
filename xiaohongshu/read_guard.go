@@ -20,6 +20,7 @@ const (
 	readOperationListFeeds   readOperation = "list_feeds"
 	readOperationSearchFeeds readOperation = "search_feeds"
 	readOperationUserProfile readOperation = "user_profile"
+	readOperationFeedDetail  readOperation = "get_feed_detail"
 )
 
 type readStage string
