@@ -13,11 +13,17 @@ import (
 const profileReadySnapshotJS = `userID => {
 	const state = window.__INITIAL_STATE__?.user;
 	const readValue = value => value?.value !== undefined ? value.value : value?._value;
+	const readUserPageData = value => {
+		if (value === null || typeof value !== "object") return value;
+		if (value.value !== undefined) return value.value;
+		if (value._value !== undefined) return value._value;
+		return value;
+	};
 	const requestedPath = "/user/profile/" + userID;
 	const userFetchingStatus = readValue(state?.userFetchingStatus);
 	const userNoteFetchingStatus = readValue(state?.userNoteFetchingStatus);
 	const isFetchingNotes = readValue(state?.isFetchingNotes);
-	const userPageData = readValue(state?.userPageData);
+	const userPageData = readUserPageData(state?.userPageData);
 	const notes = readValue(state?.notes);
 	if (window.location?.pathname !== requestedPath ||
 		userFetchingStatus !== "resolved" ||

@@ -53,6 +53,19 @@ func profileReadyFixture(underscore bool, notes interface{}) map[string]interfac
 	}}
 }
 
+func profileReadyDirectPageDataFixture(notes interface{}) map[string]interface{} {
+	state := profileReadyFixture(false, notes)
+	state["user"].(map[string]interface{})["userPageData"] = map[string]interface{}{
+		"result":       "success",
+		"basicInfo":    map[string]interface{}{"nickname": "PRIVATE_NICKNAME", "gender": 1},
+		"interactions": []interface{}{},
+		"tags":         []interface{}{},
+		"tabPublic":    map[string]interface{}{},
+		"extraInfo":    map[string]interface{}{},
+	}
+	return state
+}
+
 func TestProfileReadySnapshotJSFixtures(t *testing.T) {
 	const userID = "PRIVATE_USER_ID"
 	const pathname = "/user/profile/" + userID
@@ -62,6 +75,7 @@ func TestProfileReadySnapshotJSFixtures(t *testing.T) {
 		state     interface{}
 		path      string
 		wantReady bool
+		wantNick  string
 	}{
 		{
 			name:      "wrong_path",
@@ -115,6 +129,12 @@ func TestProfileReadySnapshotJSFixtures(t *testing.T) {
 			wantReady: true,
 		},
 		{
+			name:      "direct_user_page_data",
+			state:     profileReadyDirectPageDataFixture([]interface{}{[]interface{}{}}),
+			path:      pathname,
+			wantReady: true,
+		},
+		{
 			name:      "valid_normal",
 			state:     profileReadyFixture(false, []interface{}{[]interface{}{validFeed}, []interface{}{}}),
 			path:      pathname,
@@ -127,6 +147,24 @@ func TestProfileReadySnapshotJSFixtures(t *testing.T) {
 			wantReady: true,
 		},
 		{
+			name: "underscore_value_wins_over_direct_data",
+			state: func() interface{} {
+				state := profileReadyDirectPageDataFixture([]interface{}{[]interface{}{}})
+				state["user"].(map[string]interface{})["userPageData"] = map[string]interface{}{
+					"_value": map[string]interface{}{
+						"basicInfo":    map[string]interface{}{"nickname": "PRIVATE_WRAPPED_NICKNAME"},
+						"interactions": []interface{}{},
+					},
+					"basicInfo":    map[string]interface{}{"nickname": "PRIVATE_RAW_NICKNAME"},
+					"interactions": []interface{}{},
+				}
+				return state
+			}(),
+			path:      pathname,
+			wantReady: true,
+			wantNick:  "PRIVATE_WRAPPED_NICKNAME",
+		},
+		{
 			name: "value_precedence_over_stale_underscore",
 			state: func() interface{} {
 				state := profileReadyFixture(true, []interface{}{[]interface{}{validFeed}})
@@ -134,6 +172,36 @@ func TestProfileReadySnapshotJSFixtures(t *testing.T) {
 				user["userFetchingStatus"] = map[string]interface{}{"value": "loading", "_value": "resolved"}
 				user["userNoteFetchingStatus"] = map[string]interface{}{"value": []interface{}{nil}, "_value": []interface{}{"resolved"}}
 				user["isFetchingNotes"] = map[string]interface{}{"value": []interface{}{true}, "_value": []interface{}{false}}
+				return state
+			}(),
+			path:      pathname,
+			wantReady: false,
+		},
+		{
+			name: "null_value_does_not_fallback_to_raw",
+			state: func() interface{} {
+				state := profileReadyDirectPageDataFixture([]interface{}{[]interface{}{}})
+				state["user"].(map[string]interface{})["userPageData"] = map[string]interface{}{
+					"value":        nil,
+					"_value":       map[string]interface{}{"basicInfo": map[string]interface{}{"nickname": "PRIVATE_STALE_NICKNAME"}, "interactions": []interface{}{}},
+					"basicInfo":    map[string]interface{}{"nickname": "PRIVATE_NICKNAME"},
+					"interactions": []interface{}{},
+				}
+				return state
+			}(),
+			path:      pathname,
+			wantReady: false,
+		},
+		{
+			name: "malformed_value_does_not_fallback_to_raw",
+			state: func() interface{} {
+				state := profileReadyDirectPageDataFixture([]interface{}{[]interface{}{}})
+				state["user"].(map[string]interface{})["userPageData"] = map[string]interface{}{
+					"value":        map[string]interface{}{"unexpected": true},
+					"_value":       map[string]interface{}{"basicInfo": map[string]interface{}{"nickname": "PRIVATE_STALE_NICKNAME"}, "interactions": []interface{}{}},
+					"basicInfo":    map[string]interface{}{"nickname": "PRIVATE_NICKNAME"},
+					"interactions": []interface{}{},
+				}
 				return state
 			}(),
 			path:      pathname,
@@ -154,6 +222,9 @@ func TestProfileReadySnapshotJSFixtures(t *testing.T) {
 			require.NotNil(t, snapshot.Interactions)
 			require.NotNil(t, snapshot.Notes)
 			require.NotEmpty(t, snapshot.Notes)
+			if test.wantNick != "" {
+				require.Equal(t, test.wantNick, snapshot.BasicInfo.Nickname)
+			}
 		})
 	}
 }

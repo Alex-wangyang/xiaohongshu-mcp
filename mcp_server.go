@@ -66,8 +66,8 @@ type FeedDetailArgs struct {
 
 // UserProfileArgs 获取用户主页的参数
 type UserProfileArgs struct {
-	UserID    string `json:"user_id" jsonschema:"小红书用户ID，从Feed列表获取"`
-	XsecToken string `json:"xsec_token" jsonschema:"访问令牌，从Feed列表的xsecToken字段获取"`
+	UserID    string `json:"user_id" jsonschema:"小红书用户ID，从Feed列表的noteCard.user.userId获取"`
+	XsecToken string `json:"xsec_token" jsonschema:"用户主页访问令牌，从Feed列表的noteCard.user.xsecToken字段获取"`
 }
 
 // PostCommentArgs 发表评论的参数
