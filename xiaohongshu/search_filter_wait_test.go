@@ -40,3 +40,11 @@ func TestSearchFilterCompletionRejectsUnrelatedAndFailedRequests(t *testing.T) {
 	require.True(t, s.failure(&proto.NetworkLoadingFailed{RequestID: "matching"}))
 	require.Error(t, s.result())
 }
+
+func TestSearchFilterCompletionMatchesObservedV2Request(t *testing.T) {
+	s := &searchRequestCompletion{keyword: "test"}
+	s.sent(&proto.NetworkRequestWillBeSent{RequestID: "v2", Request: &proto.NetworkRequest{URL: "https://edith.xiaohongshu.com" + searchNotesV2Path, Method: "POST", PostData: `{"keyword":"test","page":1,"sort":"time_descending","filters":[]}`}})
+	s.response(&proto.NetworkResponseReceived{RequestID: "v2", Response: &proto.NetworkResponse{Status: 200}})
+	require.True(t, s.finished(&proto.NetworkLoadingFinished{RequestID: "v2"}))
+	require.NoError(t, s.result())
+}

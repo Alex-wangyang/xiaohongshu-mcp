@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"regexp"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -13,6 +12,8 @@ import (
 )
 
 const searchNotesPath = "/api/sns/web/v1/search/notes"
+const searchNotesV2Path = "/api/sns/web/v2/search/notes"
+const searchNotesURLPattern = `/api/sns/web/v[12]/search/notes(?:\?|$)`
 
 // A filter can legitimately return the same notes or no notes. Completion is
 // therefore tied to its own network request, never to changing note IDs.
@@ -29,7 +30,7 @@ func (s *searchRequestCompletion) sent(e *proto.NetworkRequestWillBeSent) {
 		return
 	}
 	u, err := url.Parse(e.Request.URL)
-	if err != nil || u.Path != searchNotesPath {
+	if err != nil || (u.Path != searchNotesPath && u.Path != searchNotesV2Path) {
 		return
 	}
 	var body struct {
@@ -73,7 +74,7 @@ func awaitFilteredSearchRequest(ctx context.Context, page *rod.Page, keyword str
 	state := &searchRequestCompletion{keyword: keyword}
 	// Both listeners are armed before clicking. Restrict idle detection to the
 	// search API so unrelated page polling cannot keep the operation alive.
-	waitIdle := p.WaitRequestIdle(300*time.Millisecond, []string{regexp.QuoteMeta(searchNotesPath)}, nil, nil)
+	waitIdle := p.WaitRequestIdle(300*time.Millisecond, []string{searchNotesURLPattern}, nil, nil)
 	wait := p.EachEvent(state.sent, state.response, state.finished, state.failure)
 	done := make(chan struct{})
 	go func() { defer close(done); wait() }()
