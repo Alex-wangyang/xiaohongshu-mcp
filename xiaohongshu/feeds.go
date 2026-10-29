@@ -33,22 +33,12 @@ func (f *FeedsListAction) GetFeedsList(ctx context.Context) ([]Feed, error) {
 	}); err != nil {
 		return nil, err
 	}
-	if err := session.run(readStageSettle, func(page *rod.Page) error {
-		timer := time.NewTimer(time.Second)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-			return nil
-		case <-page.GetContext().Done():
-			return page.GetContext().Err()
-		}
-	}); err != nil {
-		return nil, err
-	}
 
 	var result string
 	if err := session.run(readStageExtract, func(page *rod.Page) error {
-		remote, err := page.Eval(`() => {
+		var err error
+		result, err = awaitFeedList(session.ctx, func() (string, error) {
+			remote, err := page.Eval(`() => {
 		if (window.__INITIAL_STATE__ &&
 		    window.__INITIAL_STATE__.feed &&
 		    window.__INITIAL_STATE__.feed.feeds) {
@@ -60,14 +50,12 @@ func (f *FeedsListAction) GetFeedsList(ctx context.Context) ([]Feed, error) {
 		}
 		return "";
 	}`)
-		if err != nil {
-			return err
-		}
-		result = remote.Value.String()
-		if result == "" {
-			return errors.ErrNoFeeds
-		}
-		return nil
+			if err != nil {
+				return "", err
+			}
+			return remote.Value.String(), nil
+		})
+		return err
 	}); err != nil {
 		return nil, err
 	}
@@ -83,4 +71,38 @@ func (f *FeedsListAction) GetFeedsList(ctx context.Context) ([]Feed, error) {
 	}
 
 	return onlyNotes(feeds), nil
+}
+
+// awaitFeedList preserves the upstream hydration wait within the caller deadline.
+func awaitFeedList(ctx context.Context, read func() (string, error)) (string, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if waitCtx.Err() != nil {
+			return "", errors.ErrNoFeeds
+		}
+		result, err := read()
+		if err != nil {
+			return "", err
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if result != "" {
+			return result, nil
+		}
+		timer := time.NewTimer(300 * time.Millisecond)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			return "", errors.ErrNoFeeds
+		case <-timer.C:
+		}
+	}
 }

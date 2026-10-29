@@ -190,3 +190,57 @@ func TestSearchReadyTimeoutAndCancellationStayRedacted(t *testing.T) {
 		})
 	}
 }
+
+func TestSearchInvalidFiltersAreSanitizedByPrepareStage(t *testing.T) {
+	session := testBrowserReadSession(readOperationSearchFeeds, context.Background())
+	err := session.run(readStagePrepareFilters, func(_ *rod.Page) error {
+		_, err := collectSearchFilters([]FilterOption{{NoteType: "PRIVATE_INVALID_FILTER"}})
+		return err
+	})
+
+	var readErr *browserReadError
+	require.ErrorAs(t, err, &readErr)
+	require.Equal(t, readOperationSearchFeeds, readErr.operation)
+	require.Equal(t, readStagePrepareFilters, readErr.stage)
+	require.Equal(t, readFailureInput, readErr.category)
+	require.NotContains(t, err.Error(), "PRIVATE_")
+	require.Nil(t, stderrors.Unwrap(err))
+}
+
+func TestSearchFilteredWaitReturnsCancellationDuringRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	err := waitFeedsChanged(ctx, func() (string, error) {
+		cancel()
+		return "PRIVATE_NEW_FEED_ID", nil
+	}, "PRIVATE_OLD_FEED_ID")
+
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestSearchFilteredWaitRejectsStaleSnapshotOnTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+
+	reads := 0
+	err := waitFeedsChanged(ctx, func() (string, error) {
+		reads++
+		return "PRIVATE_STALE_FEED_ID", nil
+	}, "PRIVATE_STALE_FEED_ID")
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Greater(t, reads, 0)
+}
+
+func TestSearchFilteredWaitHonorsCancellationBeforeReading(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	reads := 0
+	err := waitFeedsChanged(ctx, func() (string, error) {
+		reads++
+		return "PRIVATE_FEED_ID", nil
+	}, "PRIVATE_OLD_FEED_ID")
+
+	require.ErrorIs(t, err, context.Canceled)
+	require.Zero(t, reads)
+}
