@@ -289,6 +289,70 @@ func TestProfileReadySnapshotRejectsUnresolvedOrWrongRequestedTab(t *testing.T) 
 
 	wrongTab := profileReadyFixtureForTab(false, feeds, 2, "liked")
 	require.Empty(t, executeProfileReadySnapshotJS(t, wrongTab, "/user/profile/"+userID, userID, TabFavorites))
+
+	for _, test := range []struct {
+		name     string
+		status   string
+		fetching bool
+		selected []interface{}
+	}{
+		{name: "pending_empty", status: "pending", selected: []interface{}{}},
+		{name: "pending_still_fetching", status: "pending", fetching: true, selected: []interface{}{map[string]interface{}{"id": "PRIVATE_FEED_ID"}}},
+		{name: "failed", status: "failed", selected: []interface{}{map[string]interface{}{"id": "PRIVATE_FEED_ID"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := profileReadyFixtureForTab(false, []interface{}{[]interface{}{}, []interface{}{}, []interface{}{}}, 1, "fav")
+			user := state["user"].(map[string]interface{})
+			user["userNoteFetchingStatus"] = profileSnapshotValue([]interface{}{"resolved", test.status, "resolved"}, false)
+			user["isFetchingNotes"] = profileSnapshotValue([]interface{}{false, test.fetching, false}, false)
+			user["notes"] = profileSnapshotValue([]interface{}{[]interface{}{}, test.selected, []interface{}{}}, false)
+			require.Empty(t, executeProfileReadySnapshotJS(t, state, "/user/profile/"+userID, userID, TabFavorites))
+		})
+	}
+}
+
+func TestProfileReadySnapshotAcceptsPendingNonFetchingLiveShape(t *testing.T) {
+	const userID = "PRIVATE_USER_ID"
+	selectedNotes := []interface{}{
+		map[string]interface{}{"id": "SAFE_FEED_01"},
+		map[string]interface{}{"id": "SAFE_FEED_02"},
+		map[string]interface{}{"id": "SAFE_FEED_03"},
+		map[string]interface{}{"id": "SAFE_FEED_04"},
+		map[string]interface{}{"id": "SAFE_FEED_05"},
+		map[string]interface{}{"id": "SAFE_FEED_06"},
+		map[string]interface{}{"id": "SAFE_FEED_07"},
+		map[string]interface{}{"id": "SAFE_FEED_08"},
+		map[string]interface{}{"id": "SAFE_FEED_09"},
+		map[string]interface{}{"id": "SAFE_FEED_10"},
+		map[string]interface{}{"id": "SAFE_FEED_11"},
+	}
+	state := map[string]interface{}{"user": map[string]interface{}{
+		"userFetchingStatus": profileSnapshotValue("resolved", false),
+		"userNoteFetchingStatus": profileSnapshotValue([]interface{}{
+			"pending", "", "", "", "",
+		}, false),
+		"isFetchingNotes": profileSnapshotValue([]interface{}{false, false, false, false, false}, false),
+		"activeTab": profileSnapshotValue(map[string]interface{}{
+			"key": 0, "index": 0, "query": "note", "label": "笔记", "lock": false,
+			"subTabs": nil, "feedType": 0,
+		}, true),
+		"notes": profileSnapshotValue([]interface{}{
+			selectedNotes, []interface{}{}, []interface{}{}, []interface{}{}, []interface{}{},
+		}, false),
+		"userPageData": map[string]interface{}{
+			"basicInfo":    map[string]interface{}{"nickname": "SAFE_NICKNAME"},
+			"interactions": []interface{}{},
+		},
+	}}
+
+	raw := executeProfileReadySnapshotJS(t, state, "/user/profile/"+userID, userID, TabNotes)
+	require.NotEmpty(t, raw)
+	var snapshot profileReadySnapshot
+	require.NoError(t, json.Unmarshal([]byte(raw), &snapshot))
+	require.Equal(t, 0, snapshot.Index)
+	require.Equal(t, "note", snapshot.Query)
+	require.Len(t, snapshot.Feeds, 11)
+	require.Equal(t, "SAFE_FEED_11", snapshot.Feeds[10].ID)
 }
 
 func TestProfileReadyDecodeKeepsOnlySelectedGroupAndEmptyFeedsNonNil(t *testing.T) {

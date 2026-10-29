@@ -27,19 +27,24 @@ const profileReadySnapshotJS = ` (userID, requestedTab) => {
 	const isFetchingNotes = readValue(state?.isFetchingNotes);
 	const userPageData = readUserPageData(state?.userPageData);
 	const notes = readValue(state?.notes);
+	const selectedNotes = Array.isArray(notes) ? notes[tabIndex] : undefined;
+	const tabFetchStatus = Array.isArray(userNoteFetchingStatus) ? userNoteFetchingStatus[tabIndex] : undefined;
+	const tabIsFetching = Array.isArray(isFetchingNotes) ? isFetchingNotes[tabIndex] : undefined;
 	const activeTab = readValue(state?.activeTab);
 	const activeIndex = activeTab?.index;
 	const query = typeof activeTab?.query === "string" ? activeTab.query : "";
+	const selectedNotesReady = Array.isArray(selectedNotes) &&
+		tabIsFetching === false &&
+		(tabFetchStatus === "resolved" || (tabFetchStatus === "pending" && selectedNotes.length > 0));
 	if (window.location?.pathname !== requestedPath ||
 		tabIndex === undefined ||
 		userFetchingStatus !== "resolved" ||
-		!Array.isArray(userNoteFetchingStatus) || userNoteFetchingStatus[tabIndex] !== "resolved" ||
-		!Array.isArray(isFetchingNotes) || isFetchingNotes[tabIndex] !== false ||
+		!Array.isArray(userNoteFetchingStatus) || !Array.isArray(isFetchingNotes) ||
 		!userPageData || typeof userPageData !== "object" || Array.isArray(userPageData) ||
 		!userPageData.basicInfo || typeof userPageData.basicInfo.nickname !== "string" ||
 		userPageData.basicInfo.nickname.length === 0 ||
 		!Array.isArray(userPageData.interactions) ||
-		!Array.isArray(notes) || !Array.isArray(notes[tabIndex]) ||
+		!Array.isArray(notes) || !selectedNotesReady ||
 		activeIndex !== tabIndex || (query !== "" && query !== requestedTab)) {
 		return "";
 	}
@@ -48,7 +53,7 @@ const profileReadySnapshotJS = ` (userID, requestedTab) => {
 		interactions: userPageData.interactions,
 		index: activeIndex,
 		query,
-		feeds: notes[tabIndex],
+		feeds: selectedNotes,
 	});
 }`
 

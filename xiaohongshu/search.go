@@ -151,14 +151,6 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 	}
 
 	if len(pending) > 0 {
-		var before string
-		if err := session.run(readStageExtract, func(page *rod.Page) error {
-			var err error
-			before, err = readFeedIDs(page)
-			return err
-		}); err != nil {
-			return nil, err
-		}
 
 		if err := session.run(readStageOpenFilters, func(page *rod.Page) error {
 			filterButton, err := page.Element(`div.filter`)
@@ -213,24 +205,16 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 				if err := session.ctx.Err(); err != nil {
 					return err
 				}
-				if err := humanize.ClickNoWaitInside(option, bounds); err != nil {
-					return fmt.Errorf("点击筛选选项「%s」失败: %w", pf.option, err)
+				if err := awaitFilteredSearchRequest(session.ctx, page, keyword, func() error {
+					return humanize.ClickNoWaitInside(option, bounds)
+				}); err != nil {
+					return err
 				}
 				if err := session.ctx.Err(); err != nil {
 					return err
 				}
 			}
 			return nil
-		}); err != nil {
-			return nil, err
-		}
-
-		if err := session.run(readStageWaitFilteredStable, func(page *rod.Page) error {
-			waitCtx, cancel := context.WithTimeout(session.ctx, 15*time.Second)
-			defer cancel()
-			return waitFeedsChanged(waitCtx, func() (string, error) {
-				return readFeedIDs(page.Context(waitCtx))
-			}, before)
 		}); err != nil {
 			return nil, err
 		}
@@ -252,50 +236,6 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 	}
 
 	return onlyNotes(feeds), nil
-}
-
-// feedIDsJS 读当前结果集的 id 列表，用来判断数据有没有换一批。
-const feedIDsJS = `() => {
-	const f = window.__INITIAL_STATE__?.search?.feeds;
-	const v = f ? (f.value !== undefined ? f.value : f._value) : null;
-	return v ? v.map(x => x.id).join(",") : "";
-}`
-
-func readFeedIDs(page *rod.Page) (string, error) {
-	res, err := page.Eval(feedIDsJS)
-	if err != nil {
-		return "", err
-	}
-	return res.Value.Str(), nil
-}
-
-// waitFeedsChanged 等筛选后的数据到位；超时或取消时必须返回错误，不能使用旧结果。
-//
-// 点完筛选项之后不能立刻读结果：站点是先把 feeds 清空、再灌入新数据，
-// 中间这段时间读到的要么是空，要么还是筛选前那一批。
-func waitFeedsChanged(ctx context.Context, read func() (string, error), before string) error {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		now, err := read()
-		if err != nil {
-			return err
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if now != "" && now != before {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-	}
 }
 
 // panelBounds 取筛选面板当前占据的矩形。
