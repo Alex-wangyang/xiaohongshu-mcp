@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -155,4 +157,140 @@ func TestMCPAcceptsConfiguredBearerToken(t *testing.T) {
 	router.ServeHTTP(recorder, request)
 
 	assert.Equal(t, http.StatusOK, recorder.Code)
+}
+
+func TestMCPTrustedLocalHostAlias(t *testing.T) {
+	const trustedAuthority = "host.docker.internal:18060"
+	t.Setenv("MCP_TRUSTED_LOCAL_HOST", trustedAuthority)
+
+	server := httptest.NewServer(setupRoutes(NewAppServer(NewXiaohongshuService(), "secret-token")))
+	defer server.Close()
+
+	request := func(host, authorization, forwardedHost string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/mcp",
+			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		require.NoError(t, err)
+		req.Host = host
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if authorization != "" {
+			req.Header.Set("Authorization", authorization)
+		}
+		if forwardedHost != "" {
+			req.Header.Set("X-Forwarded-Host", forwardedHost)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		return resp
+	}
+
+	t.Run("exact authority with token is accepted", func(t *testing.T) {
+		resp := request(trustedAuthority, "Bearer secret-token", "")
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Result struct {
+				Tools []struct {
+					Name string `json:"name"`
+				} `json:"tools"`
+			} `json:"result"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+		assert.NotEmpty(t, result.Result.Tools)
+	})
+
+	for _, host := range []string{
+		"evil.example:18060",
+		"host.docker.internal.attacker:18060",
+		"host.docker.internal:18061",
+	} {
+		t.Run("rejects "+host, func(t *testing.T) {
+			resp := request(host, "Bearer secret-token", "")
+			defer resp.Body.Close()
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+		})
+	}
+
+	t.Run("token is still required", func(t *testing.T) {
+		resp := request(trustedAuthority, "", "")
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+
+	t.Run("invalid token is rejected", func(t *testing.T) {
+		resp := request(trustedAuthority, "Bearer wrong-token", "")
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+
+	t.Run("forwarded host cannot enable the alias", func(t *testing.T) {
+		resp := request("evil.example:18060", "Bearer secret-token", trustedAuthority)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+}
+
+func TestMCPTrustedLocalHostAliasRequiresLoopbackLocalAddress(t *testing.T) {
+	const trustedAuthority = "host.docker.internal:18060"
+	tests := []struct {
+		name      string
+		authority string
+		localAddr net.Addr
+		want      bool
+	}{
+		{
+			name:      "loopback connection",
+			authority: trustedAuthority,
+			localAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 18060},
+			want:      true,
+		},
+		{
+			name:      "non-loopback connection",
+			authority: trustedAuthority,
+			localAddr: &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 18060},
+			want:      false,
+		},
+		{
+			name:      "missing local address",
+			authority: trustedAuthority,
+			want:      false,
+		},
+		{
+			name:      "different authority",
+			authority: "other.internal:18060",
+			localAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 18060},
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "http://"+tt.authority+"/mcp", nil)
+			if tt.localAddr != nil {
+				req = req.WithContext(context.WithValue(req.Context(), http.LocalAddrContextKey, tt.localAddr))
+			}
+			assert.Equal(t, tt.want, isTrustedLocalHostRequest(req, trustedAuthority))
+		})
+	}
+}
+
+func TestMCPUnconfiguredLocalHostAliasIsRejected(t *testing.T) {
+	t.Setenv("MCP_TRUSTED_LOCAL_HOST", "")
+
+	server := httptest.NewServer(setupRoutes(NewAppServer(NewXiaohongshuService(), "")))
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	require.NoError(t, err)
+	req.Host = "host.docker.internal:18060"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 }
