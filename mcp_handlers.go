@@ -305,7 +305,7 @@ func (s *AppServer) handleSearchFeeds(ctx context.Context, args SearchFeedsArgs)
 		}
 	}
 
-	logrus.Infof("MCP: 搜索Feeds - 关键词: %s", args.Keyword)
+	logrus.Info("MCP: 搜索Feeds - 参数已接收")
 
 	filter := xiaohongshu.FilterOption{
 		SortBy:      args.Filters.SortBy,
@@ -315,7 +315,16 @@ func (s *AppServer) handleSearchFeeds(ctx context.Context, args SearchFeedsArgs)
 		Location:    args.Filters.Location,
 	}
 
-	result, err := s.xiaohongshuService.SearchFeeds(ctx, args.Keyword, filter)
+	hasFilter := filter.SortBy != "" || filter.NoteType != "" ||
+		filter.PublishTime != "" || filter.SearchScope != "" || filter.Location != ""
+
+	var result *FeedsListResponse
+	var err error
+	if hasFilter {
+		result, err = s.xiaohongshuService.SearchFeeds(ctx, args.Keyword, filter)
+	} else {
+		result, err = s.xiaohongshuService.SearchFeeds(ctx, args.Keyword)
+	}
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -429,7 +438,7 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args map[string]any
 		config.ScrollSpeed = raw
 	}
 
-	logrus.Infof("MCP: 获取Feed详情 - Feed ID: %s, loadAllComments=%v, config=%+v", feedID, loadAll, config)
+	logrus.Info("MCP: 获取Feed详情 - 参数已接收")
 
 	result, err := s.xiaohongshuService.GetFeedDetailWithConfig(ctx, feedID, xsecToken, loadAll, config)
 	if err != nil {
@@ -487,7 +496,7 @@ func (s *AppServer) handleUserProfile(ctx context.Context, args map[string]any) 
 		}
 	}
 
-	logrus.Infof("MCP: 获取用户主页 - User ID: %s", userID)
+	logrus.Info("MCP: 获取用户主页 - 参数已接收")
 
 	tab, _ := args["tab"].(string)
 

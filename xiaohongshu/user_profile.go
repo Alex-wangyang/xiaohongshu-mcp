@@ -2,12 +2,12 @@ package xiaohongshu
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/xpzouying/xiaohongshu-mcp/humanize"
 )
 
@@ -41,99 +41,57 @@ var tabLabel = map[ProfileTab]string{
 }
 
 type UserProfileAction struct {
-	page *rod.Page
+	read browserReadAction
 }
 
 func NewUserProfileAction(page *rod.Page) *UserProfileAction {
-	pp := page.Timeout(60 * time.Second)
-	return &UserProfileAction{page: pp}
+	return &UserProfileAction{read: newBrowserReadAction(readOperationUserProfile, page)}
 }
 
-// UserProfile 获取用户基本信息及指定 tab 下的帖子
+// UserProfile 获取用户基本信息及指定 tab 下的帖子。
 func (u *UserProfileAction) UserProfile(ctx context.Context, userID, xsecToken string, tab ProfileTab) (*UserProfileResponse, error) {
-	page := u.page.Context(ctx).Timeout(60 * time.Second) // 重设被 .Context 清掉的 deadline
+	session := u.read.begin(ctx)
+	defer session.close()
+
+	if err := session.run(readStagePrepareFilters, func(_ *rod.Page) error {
+		parsed, err := ParseProfileTab(string(tab))
+		if err != nil {
+			return &invalidReadInputError{cause: err}
+		}
+		tab = parsed
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 
 	searchURL := makeUserProfileURL(userID, xsecToken, tab)
-	page.MustNavigate(searchURL)
-	page.MustWaitStable()
+	if err := session.run(readStageNavigate, func(page *rod.Page) error {
+		return page.Navigate(searchURL)
+	}); err != nil {
+		return nil, err
+	}
 
-	return u.extractUserProfileData(page, tab)
+	return readProfileSnapshot(session, userID, tab)
 }
 
-// extractUserProfileData 从页面中提取用户资料数据的通用方法
-func (u *UserProfileAction) extractUserProfileData(page *rod.Page, tab ProfileTab) (*UserProfileResponse, error) {
-	page.MustWait(`() => window.__INITIAL_STATE__ !== undefined`)
-
-	userDataResult := page.MustEval(`() => {
-		if (window.__INITIAL_STATE__ &&
-		    window.__INITIAL_STATE__.user &&
-		    window.__INITIAL_STATE__.user.userPageData) {
-			const userPageData = window.__INITIAL_STATE__.user.userPageData;
-			const data = userPageData.value !== undefined ? userPageData.value : userPageData._value;
-			if (data) {
-				return JSON.stringify(data);
-			}
-		}
-		return "";
-	}`).String()
-
-	if userDataResult == "" {
-		return nil, fmt.Errorf("user.userPageData.value not found in __INITIAL_STATE__")
+func readProfileSnapshot(session *browserReadSession, userID string, tab ProfileTab) (*UserProfileResponse, error) {
+	var snapshot string
+	if err := session.run(readStageWaitInitialState, func(page *rod.Page) error {
+		var err error
+		snapshot, err = awaitSearchReady(session.ctx, rodProfileReadPage{page: page, tab: tab}, userID)
+		return err
+	}); err != nil {
+		return nil, err
 	}
 
-	// 2. 获取用户帖子及当前 tab：window.__INITIAL_STATE__.user
-	notesResult := page.MustEval(`() => {
-		const u = window.__INITIAL_STATE__ && window.__INITIAL_STATE__.user;
-		if (!u || !u.notes) return "";
-		const unwrap = (o) => (o && o.value !== undefined) ? o.value : (o && o._value);
-		const notes = unwrap(u.notes);
-		if (!notes) return "";
-		const active = unwrap(u.activeTab) || {};
-		return JSON.stringify({notes: notes, index: active.index || 0, query: active.query || ""});
-	}`).String()
-
-	if notesResult == "" {
-		return nil, fmt.Errorf("user.notes.value not found in __INITIAL_STATE__")
+	var response *UserProfileResponse
+	if err := session.run(readStageDecode, func(_ *rod.Page) error {
+		var err error
+		response, err = decodeProfileReadySnapshot(snapshot, tab)
+		return err
+	}); err != nil {
+		return nil, err
 	}
-
-	// 解析用户信息
-	var userPageData struct {
-		Interactions []UserInteractions `json:"interactions"`
-		BasicInfo    UserBasicInfo      `json:"basicInfo"`
-	}
-	if err := json.Unmarshal([]byte(userDataResult), &userPageData); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal userPageData: %w", err)
-	}
-
-	var notesData struct {
-		Notes [][]Feed `json:"notes"`
-		Index int      `json:"index"`
-		Query string   `json:"query"`
-	}
-	if err := json.Unmarshal([]byte(notesResult), &notesData); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal notes: %w", err)
-	}
-
-	// tab 不符时报错，避免把别的 tab 的内容当成结果返回
-	want := tab
-	if want == "" {
-		want = TabNotes
-	}
-	if notesData.Query != "" && ProfileTab(notesData.Query) != want {
-		return nil, fmt.Errorf("当前 tab 为 %q，与请求的 %q 不符", notesData.Query, want)
-	}
-
-	// 组装响应
-	response := &UserProfileResponse{
-		UserBasicInfo: userPageData.BasicInfo,
-		Interactions:  userPageData.Interactions,
-	}
-
-	// 每个 tab 的内容存在各自的下标里，只取当前 tab 的，避免混入其他 tab
-	if notesData.Index >= 0 && notesData.Index < len(notesData.Notes) {
-		response.Feeds = append(response.Feeds, notesData.Notes[notesData.Index]...)
-	}
-
 	return response, nil
 }
 
@@ -146,50 +104,128 @@ func makeUserProfileURL(userID, xsecToken string, tab ProfileTab) string {
 }
 
 func (u *UserProfileAction) GetMyProfileViaSidebar(ctx context.Context, tab ProfileTab) (*UserProfileResponse, error) {
-	page := u.page.Context(ctx).Timeout(60 * time.Second) // 重设被 .Context 清掉的 deadline
+	session := u.read.begin(ctx)
+	defer session.close()
 
-	// 创建导航动作
-	navigate := NewNavigate(page)
-
-	// 通过侧边栏导航到个人主页
-	if err := navigate.ToProfilePage(ctx); err != nil {
-		return nil, fmt.Errorf("failed to navigate to profile page via sidebar: %w", err)
-	}
-
-	// 等待页面加载完成并获取 __INITIAL_STATE__
-	page.MustWaitStable()
-
-	if err := u.selectTab(ctx, page, tab); err != nil {
+	if err := session.run(readStagePrepareFilters, func(_ *rod.Page) error {
+		parsed, err := ParseProfileTab(string(tab))
+		if err != nil {
+			return &invalidReadInputError{cause: err}
+		}
+		tab = parsed
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 
-	return u.extractUserProfileData(page, tab)
+	if err := session.run(readStageNavigate, func(page *rod.Page) error {
+		if err := navigateToProfilePage(page, session.ctx); err != nil {
+			return err
+		}
+		return selectProfileTab(session.ctx, page, tab)
+	}); err != nil {
+		return nil, err
+	}
+
+	var userID string
+	if err := session.run(readStageExtractProfile, func(page *rod.Page) error {
+		var err error
+		userID, err = currentProfileUserID(page)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+
+	var snapshot string
+	if err := session.run(readStageWaitInitialState, func(page *rod.Page) error {
+		var err error
+		snapshot, err = awaitSearchReady(session.ctx, rodProfileReadPage{page: page, tab: tab}, userID)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+
+	var response *UserProfileResponse
+	if err := session.run(readStageDecode, func(_ *rod.Page) error {
+		var err error
+		response, err = decodeProfileReadySnapshot(snapshot, tab)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
-// selectTab 切到目标子 tab。「笔记」是默认 tab，无需点击。
-func (u *UserProfileAction) selectTab(ctx context.Context, page *rod.Page, tab ProfileTab) error {
-	if tab == "" || tab == TabNotes {
+func navigateToProfilePage(page *rod.Page, ctx context.Context) error {
+	if err := page.Navigate("https://www.xiaohongshu.com/explore"); err != nil {
+		return err
+	}
+	if err := page.WaitLoad(); err != nil {
+		return err
+	}
+	if _, err := page.Element(`div#app`); err != nil {
+		return err
+	}
+	if err := page.WaitStable(time.Second); err != nil {
+		return err
+	}
+	profileLink, err := page.Element(`div.main-container li.user.side-bar-component a.link-wrapper span.channel`)
+	if err != nil {
+		return err
+	}
+	humanize.Delay(ctx, humanize.BeforeClick)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := profileLink.Click(proto.InputMouseButtonLeft, 1); err != nil {
+		return err
+	}
+	return page.WaitLoad()
+}
+
+func currentProfileUserID(page *rod.Page) (string, error) {
+	if err := page.Wait(rod.Eval(`() => window.location.pathname.startsWith("/user/profile/")`)); err != nil {
+		return "", err
+	}
+	result, err := page.Eval(`() => window.location.pathname`)
+	if err != nil {
+		return "", err
+	}
+	const profilePathPrefix = "/user/profile/"
+	pathname := result.Value.String()
+	if !strings.HasPrefix(pathname, profilePathPrefix) {
+		return "", fmt.Errorf("current page is not a user profile")
+	}
+	userID := strings.TrimPrefix(pathname, profilePathPrefix)
+	if userID == "" || strings.Contains(userID, "/") {
+		return "", fmt.Errorf("current profile path is incomplete")
+	}
+	return userID, nil
+}
+
+func selectProfileTab(ctx context.Context, page *rod.Page, tab ProfileTab) error {
+	if tab == TabNotes {
 		return nil
 	}
 
 	label := tabLabel[tab]
 	elems, err := page.Elements(`.reds-tab-item.sub-tab-list`)
 	if err != nil {
-		return fmt.Errorf("未找到主页子 tab: %w", err)
+		return err
 	}
-
 	for _, elem := range elems {
 		text, err := elem.Text()
 		if err != nil || strings.TrimSpace(text) != label {
 			continue
 		}
 		humanize.Delay(ctx, humanize.BeforeClick)
-		if err := humanize.Click(elem); err != nil {
-			return fmt.Errorf("切换到 %s 失败: %w", label, err)
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		humanize.Delay(ctx, humanize.AfterClick)
-		page.MustWaitStable()
-		return nil
+		if err := elem.Click(proto.InputMouseButtonLeft, 1); err != nil {
+			return err
+		}
+		return page.WaitStable(time.Second)
 	}
-	return fmt.Errorf("未找到子 tab %q", label)
+	return fmt.Errorf("requested profile tab is unavailable")
 }

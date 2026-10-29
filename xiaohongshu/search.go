@@ -10,8 +10,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/sirupsen/logrus"
-	"github.com/xpzouying/xiaohongshu-mcp/errors"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/xpzouying/xiaohongshu-mcp/humanize"
 )
 
@@ -35,21 +34,22 @@ type FilterOption struct {
 // 组和选项一律按文本定位，不用序号。面板里同一个选项可能渲染成多个 div.tags
 // （数量随视口而变），首项是否重复各组也不一致，下标对不齐。
 type filterGroup struct {
-	label   string                    // 面板上这一组的标签文本
-	pick    func(FilterOption) string // 从入参里取这一组的值
-	allowed []string                  // 合法取值；在打开页面之前就能挡掉写错的值
+	label        string                    // 面板上这一组的标签文本
+	defaultValue string                    // 页面初始选中的值，不需要重复点击
+	pick         func(FilterOption) string // 从入参里取这一组的值
+	allowed      []string                  // 合法取值；在打开页面之前就能挡掉写错的值
 }
 
 var filterGroups = []filterGroup{
-	{"排序依据", func(f FilterOption) string { return f.SortBy },
+	{"排序依据", "综合", func(f FilterOption) string { return f.SortBy },
 		[]string{"综合", "最新", "最多点赞", "最多评论", "最多收藏"}},
-	{"笔记类型", func(f FilterOption) string { return f.NoteType },
+	{"笔记类型", "不限", func(f FilterOption) string { return f.NoteType },
 		[]string{"不限", "视频", "图文"}},
-	{"发布时间", func(f FilterOption) string { return f.PublishTime },
+	{"发布时间", "不限", func(f FilterOption) string { return f.PublishTime },
 		[]string{"不限", "一天内", "一周内", "半年内"}},
-	{"搜索范围", func(f FilterOption) string { return f.SearchScope },
+	{"搜索范围", "不限", func(f FilterOption) string { return f.SearchScope },
 		[]string{"不限", "已看过", "未看过", "已关注"}},
-	{"位置距离", func(f FilterOption) string { return f.Location },
+	{"位置距离", "不限", func(f FilterOption) string { return f.Location },
 		[]string{"不限", "同城", "附近"}},
 }
 
@@ -59,12 +59,12 @@ type pendingFilter struct {
 	option string // 选项文本
 }
 
-// collectFilters 把入参展开成待应用的筛选项，顺便校验取值。
+// collectFilters 把入参整理成待应用的筛选项，同一组以最后一个非空值为准。
 //
 // 校验放在这里是为了在打开浏览器之前就挡掉写错的值——否则要等导航、悬停、
 // 在面板里找不到之后才能报错，等于为了说一句"你写错了"先向平台发一次请求。
 func collectFilters(filters []FilterOption) ([]pendingFilter, error) {
-	var pending []pendingFilter
+	selected := make(map[string]string, len(filterGroups))
 
 	for _, f := range filters {
 		for _, g := range filterGroups {
@@ -76,134 +76,198 @@ func collectFilters(filters []FilterOption) ([]pendingFilter, error) {
 				return nil, fmt.Errorf("%s 不支持 %q，可选：%s",
 					g.label, value, strings.Join(g.allowed, "、"))
 			}
-			pending = append(pending, pendingFilter{group: g.label, option: value})
+			selected[g.label] = value
 		}
+	}
+
+	var pending []pendingFilter
+	for _, g := range filterGroups {
+		value, ok := selected[g.label]
+		if !ok || value == g.defaultValue {
+			continue
+		}
+		pending = append(pending, pendingFilter{group: g.label, option: value})
 	}
 
 	return pending, nil
 }
 
+func collectSearchFilters(filters []FilterOption) ([]pendingFilter, error) {
+	pending, err := collectFilters(filters)
+	if err != nil {
+		return nil, &invalidReadInputError{cause: err}
+	}
+	return pending, nil
+}
+
 type SearchAction struct {
-	page *rod.Page
+	read browserReadAction
 }
 
 func NewSearchAction(page *rod.Page) *SearchAction {
-	pp := page.Timeout(60 * time.Second)
-
-	return &SearchAction{page: pp}
+	return &SearchAction{read: newBrowserReadAction(readOperationSearchFeeds, page)}
 }
 
 func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...FilterOption) ([]Feed, error) {
-	// 先校验筛选取值，必须在导航之前——写错的值不该先向平台发一次请求再报错。
-	pending, err := collectFilters(filters)
-	if err != nil {
+	session := s.read.begin(ctx)
+	defer session.close()
+
+	var pending []pendingFilter
+	if err := session.run(readStagePrepareFilters, func(_ *rod.Page) error {
+		var err error
+		pending, err = collectSearchFilters(filters)
+		return err
+	}); err != nil {
 		return nil, err
 	}
 
-	// 注意 .Context(ctx) 会替换掉 NewSearchAction 里设的 60s deadline，必须在其后重新 Timeout，
-	// 否则搜索页不 stable 时 MustWaitStable/MustWait 会永久挂起（无 deadline 可依赖）。
-	page := s.page.Context(ctx).Timeout(60 * time.Second)
-
 	searchURL := makeSearchURL(keyword)
-	page.MustNavigate(searchURL)
-	page.MustWaitStable()
-	page.MustWait(`() => window.__INITIAL_STATE__ !== undefined`)
-	humanize.Delay(ctx, humanize.AfterNavigate)
-
-	if len(pending) > 0 {
-		// 悬停在筛选按钮上展开面板
-		filterButton := page.MustElement(`div.filter`)
-		if err := humanize.Hover(filterButton); err != nil {
-			return nil, fmt.Errorf("悬停筛选按钮失败: %w", err)
+	if err := session.run(readStageNavigate, func(page *rod.Page) error {
+		if err := session.ctx.Err(); err != nil {
+			return err
 		}
-		humanize.Delay(ctx, humanize.BeforeClick)
-
-		// 等待筛选面板出现
-		page.MustWait(`() => document.querySelector('div.filter-panel') !== null`)
-
-		// 记下筛选前的结果，用来判断筛选后的数据什么时候到位
-		before := readFeedIDs(page)
-
-		// 用 ClickNoWait：筛选面板是 hover 浮层，rod 的 WaitInteractable 会误判被遮挡而死等；
-		// ClickNoWait 移进面板内选项（维持 hover、面板不关）再点。
-		for _, pf := range pending {
-			option, err := findFilterOption(page, pf)
-			if err != nil {
-				return nil, err
-			}
-			humanize.Delay(ctx, humanize.BeforeClick)
-			if err := humanize.ClickNoWait(option); err != nil {
-				return nil, fmt.Errorf("点击筛选选项「%s」失败: %w", pf.option, err)
+		// Enable request observation before navigation. Keeping it enabled for
+		// this page avoids toggling the domain between serialized filter clicks.
+		if len(pending) > 0 {
+			if err := (proto.NetworkEnable{}).Call(page); err != nil {
+				return err
 			}
 		}
-
-		waitFeedsChanged(page, before, 15*time.Second)
+		return page.Navigate(searchURL)
+	}); err != nil {
+		return nil, err
+	}
+	if err := session.run(readStageWaitDOMStable, func(page *rod.Page) error {
+		return page.WaitDOMStable(time.Second, 0)
+	}); err != nil {
+		return nil, err
+	}
+	if err := session.run(readStageSettle, func(_ *rod.Page) error {
+		humanize.Delay(session.ctx, humanize.AfterNavigate)
+		return session.ctx.Err()
+	}); err != nil {
+		return nil, err
 	}
 
-	result := page.MustEval(`() => {
-		if (window.__INITIAL_STATE__ &&
-		    window.__INITIAL_STATE__.search &&
-		    window.__INITIAL_STATE__.search.feeds) {
-			const feeds = window.__INITIAL_STATE__.search.feeds;
-			const feedsData = feeds.value !== undefined ? feeds.value : feeds._value;
-			if (feedsData) {
-				return JSON.stringify(feedsData);
-			}
-		}
-		return "";
-	}`).String()
+	var snapshot string
+	if err := session.run(readStageWaitInitialState, func(page *rod.Page) error {
+		var err error
+		snapshot, err = awaitSearchReady(session.ctx, rodSearchReadPage{page: page}, keyword)
+		return err
+	}); err != nil {
+		return nil, err
+	}
 
-	if result == "" {
-		return nil, errors.ErrNoFeeds
+	if len(pending) > 0 {
+
+		if err := session.run(readStageOpenFilters, func(page *rod.Page) error {
+			filterButton, err := page.Element(`div.filter`)
+			if err != nil {
+				return err
+			}
+			if err := session.ctx.Err(); err != nil {
+				return err
+			}
+			if err := humanize.Hover(filterButton); err != nil {
+				return err
+			}
+			humanize.Delay(session.ctx, humanize.BeforeClick)
+			if err := session.ctx.Err(); err != nil {
+				return err
+			}
+			return page.Wait(rod.Eval(`() => document.querySelector('div.filter-panel') !== null`))
+		}); err != nil {
+			return nil, err
+		}
+
+		if err := session.run(readStageApplyFilters, func(page *rod.Page) error {
+			bounds, err := panelBounds(page)
+			if err != nil {
+				return err
+			}
+			if err := session.ctx.Err(); err != nil {
+				return err
+			}
+			if err := humanize.MoveInto(page, bounds); err != nil {
+				return fmt.Errorf("移入筛选面板失败: %w", err)
+			}
+			if err := session.ctx.Err(); err != nil {
+				return err
+			}
+
+			// 用 ClickNoWait：筛选面板是 hover 浮层，rod 的 WaitInteractable 会误判被遮挡而死等。
+			for _, pf := range pending {
+				if err := session.ctx.Err(); err != nil {
+					return err
+				}
+				option, err := findFilterOption(page, pf)
+				if err != nil {
+					return err
+				}
+				// 每轮重取：点完一项后面板可能重排。
+				bounds, err = panelBounds(page)
+				if err != nil {
+					return err
+				}
+				humanize.Delay(session.ctx, humanize.BeforeClick)
+				if err := session.ctx.Err(); err != nil {
+					return err
+				}
+				if err := awaitFilteredSearchRequest(session.ctx, page, keyword, func() error {
+					return humanize.ClickNoWaitInside(option, bounds)
+				}); err != nil {
+					return err
+				}
+				if err := session.ctx.Err(); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+
+		if err := session.run(readStageWaitFilteredState, func(page *rod.Page) error {
+			var err error
+			snapshot, err = awaitSearchReady(session.ctx, rodSearchReadPage{page: page}, keyword)
+			return err
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	var feeds []Feed
-	if err := json.Unmarshal([]byte(result), &feeds); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal feeds: %w", err)
+	if err := session.run(readStageDecode, func(_ *rod.Page) error {
+		return json.Unmarshal([]byte(snapshot), &feeds)
+	}); err != nil {
+		return nil, err
 	}
 
 	return onlyNotes(feeds), nil
 }
 
-// feedIDsJS 读当前结果集的 id 列表，用来判断数据有没有换一批。
-const feedIDsJS = `() => {
-	const f = window.__INITIAL_STATE__?.search?.feeds;
-	const v = f ? (f.value !== undefined ? f.value : f._value) : null;
-	return v ? v.map(x => x.id).join(",") : "";
-}`
-
-func readFeedIDs(page *rod.Page) string {
-	res, err := page.Eval(feedIDsJS)
+// panelBounds 取筛选面板当前占据的矩形。
+func panelBounds(page *rod.Page) (humanize.Rect, error) {
+	panel, err := page.Element("div.filter-panel")
 	if err != nil {
-		return ""
+		return humanize.Rect{}, fmt.Errorf("读取筛选面板失败: %w", err)
 	}
-	return res.Value.Str()
-}
-
-// waitFeedsChanged 等筛选后的数据到位。
-//
-// 点完筛选项之后不能立刻读结果：站点是先把 feeds 清空、再灌入新数据，
-// 中间这段时间读到的要么是空，要么还是筛选前那一批。原先用
-// MustWait(__INITIAL_STATE__ !== undefined) 等，而这个条件从首屏起就为真、
-// 立即返回，等于没等——多个筛选项一起用时表现为只有一部分生效。
-//
-// 超时不报错：筛选已经点上了，宁可返回可能偏旧的数据，也不要整个搜索失败。
-func waitFeedsChanged(page *rod.Page, before string, timeout time.Duration) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if now := readFeedIDs(page); now != "" && now != before {
-			return
-		}
-		time.Sleep(300 * time.Millisecond)
+	shape, err := panel.Shape()
+	if err != nil {
+		return humanize.Rect{}, fmt.Errorf("读取筛选面板失败: %w", err)
 	}
-	logrus.Warnf("筛选后等待结果刷新超时（%s），返回的可能是筛选前的数据", timeout)
+	if len(shape.Quads) == 0 {
+		return humanize.Rect{}, fmt.Errorf("筛选面板没有可用区域")
+	}
+	q := shape.Quads[0]
+	return humanize.Rect{Left: q[0], Top: q[1], Right: q[4], Bottom: q[5]}, nil
 }
 
 // findFilterOption 在筛选面板里定位一个选项：按标签找到组，再在组内按文本找选项。
 //
 // 全程不用序号。同一个选项在面板里可能渲染成多个 div.tags（数量随视口而变，
 // 且首项是否重复各组不一致），下标对不齐；早前用 div.tags:nth-child(N) 会选错项。
-// 多份重复的位置尺寸完全相同，取第一个点下去落在同一处。
+// 同一个文本可能对应多个节点，只取其中可见的那个。
 //
 // 作用域必须限定在 div.filter-panel 内且只认 div.tags：页面别处存在同文本的
 // 可见元素（顶部频道栏的「图文」「视频」、标签「综合」），放宽会点错地方。
@@ -230,16 +294,25 @@ func findFilterOption(page *rod.Page, pf pendingFilter) (*rod.Element, error) {
 		}
 
 		var available []string
+		matched := false
 		for _, opt := range options {
 			t, err := opt.Text()
 			if err != nil {
 				continue
 			}
 			t = strings.TrimSpace(t)
-			if t == pf.option {
+			available = append(available, t)
+			if t != pf.option {
+				continue
+			}
+
+			matched = true
+			if humanize.Visible(opt) {
 				return opt, nil
 			}
-			available = append(available, t)
+		}
+		if matched {
+			return nil, fmt.Errorf("「%s」里的选项「%s」当前不可见", pf.group, pf.option)
 		}
 		return nil, fmt.Errorf("「%s」里没有选项「%s」，页面上是：%s",
 			pf.group, pf.option, strings.Join(available, "、"))
