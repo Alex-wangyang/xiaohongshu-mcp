@@ -1,7 +1,7 @@
 # xiaohongshu-mcp
 
 <!-- ALL-CONTRIBUTORS-BADGE:START - Do not remove or modify this section -->
-[![All Contributors](https://img.shields.io/badge/all_contributors-27-orange.svg?style=flat-square)](#contributors-)
+[![All Contributors](https://img.shields.io/badge/all_contributors-29-orange.svg?style=flat-square)](#contributors-)
 <!-- ALL-CONTRIBUTORS-BADGE:END -->
 
 [![善款已捐](https://img.shields.io/badge/善款已捐-CNY%201810.00-brightgreen?style=flat-square)](./DONATIONS.md)
@@ -37,7 +37,13 @@ MCP for 小红书 / xiaohongshu.com。让你的 AI 助手直接访问小红书�
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=xpzouying/xiaohongshu-mcp&type=Timeline)](https://www.star-history.com/#xpzouying/xiaohongshu-mcp&Timeline)
+<!-- 图表由 .github/workflows/star-history.yml 每周生成到 star-history 数据分支（star-history.com 托管图表因 GitHub API 限制已失效） -->
+<a href="https://www.star-history.com/#xpzouying/xiaohongshu-mcp&Timeline">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/xpzouying/xiaohongshu-mcp/star-history/assets/star-history-dark.svg" />
+    <img alt="Star History Chart" src="https://raw.githubusercontent.com/xpzouying/xiaohongshu-mcp/star-history/assets/star-history.svg" />
+  </picture>
+</a>
 
 ## 赞赏支持
 
@@ -328,16 +334,16 @@ https://github.com/user-attachments/assets/cc385b6c-422c-489b-a5fc-63e92c695b80
 **主程序（MCP 服务）：**
 
 - **macOS Apple Silicon**: `xiaohongshu-mcp-darwin-arm64`
-- **macOS Intel**: `xiaohongshu-mcp-darwin-amd64`
 - **Windows x64**: `xiaohongshu-mcp-windows-amd64.exe`
 - **Linux x64**: `xiaohongshu-mcp-linux-amd64`
 
 **登录工具：**
 
 - **macOS Apple Silicon**: `xiaohongshu-login-darwin-arm64`
-- **macOS Intel**: `xiaohongshu-login-darwin-amd64`
 - **Windows x64**: `xiaohongshu-login-windows-amd64.exe`
 - **Linux x64**: `xiaohongshu-login-linux-amd64`
+
+> 目前支持以上三个平台。macOS Intel 与 Linux ARM64 暂不支持。
 
 使用步骤：
 
@@ -427,7 +433,7 @@ docker build -t xpzouying/xiaohongshu-mcp .
 
 Docker 版本会自动：
 
-- 配置 CloakBrowser Chromium 和中文字体
+- 配置内置浏览器和中文字体
 - 挂载 `./data` 用于存储 cookies 和运行数据目录
 - 挂载 `./images` 用于存储发布的图片
 - 暴露 18060 端口供 MCP 连接
@@ -493,6 +499,35 @@ XHS_PROXY=http://proxy:port go run .
 
 支持 HTTP/HTTPS/SOCKS5 代理，日志中会自动隐藏代理的认证信息。
 
+**访问鉴权（可选）**：
+
+默认关闭鉴权。生产环境建议使用 `AUTH_TOKEN` 环境变量配置；非空的启动参数优先于环境变量，留空则读取 `AUTH_TOKEN`。
+
+```bash
+# 环境变量
+AUTH_TOKEN=your-secret-token ./xiaohongshu-mcp-darwin-arm64
+AUTH_TOKEN=your-secret-token go run .
+
+# 非空启动参数（优先于环境变量）
+./xiaohongshu-mcp-darwin-arm64 -token=your-secret-token
+go run . -token=your-secret-token
+```
+
+启用鉴权后，所有 MCP 客户端都必须配置自定义请求头 `Authorization: Bearer <token>`。命令行参数可能被进程列表看到，部署环境优先使用 `AUTH_TOKEN`。
+
+例如，支持自定义请求头的 MCP 客户端可使用以下配置：
+
+```json
+{
+  "mcpServers": {
+    "xiaohongshu-mcp": {
+      "url": "http://localhost:18060/mcp",
+      "headers": { "Authorization": "Bearer your-secret-token" }
+    }
+  }
+}
+```
+
 ## 1.4. 验证 MCP
 
 ```bash
@@ -551,6 +586,7 @@ go run . -headless=false
 # 测试 MCP 连接
 curl -X POST http://localhost:18060/mcp \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-secret-token" \
   -d '{"jsonrpc":"2.0","method":"initialize","params":{},"id":1}'
 ```
 
@@ -997,9 +1033,9 @@ npx mcporter list xiaohongshu-mcp
 **重要：在群里问问题之前，请一定要先仔细看完 README 文档以及查看 Issues。**
 
 ### 微信群
-|                                                 微信群 23 群                                        |                                                 微信群 24 群                                         |
+|                                                 微信群 25 群                                        |                                                 微信群 26 群                                         |
 | :------------------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------------------: |
-| <img src="https://github.com/user-attachments/assets/d12a2bcc-ecd9-4bc8-8c36-fe5b16112e44" alt="WechatIMG119" width="300"> | <img src="https://github.com/user-attachments/assets/4aa00b70-da08-4867-92f1-99d1394e4338" alt="WechatIMG119" width="300">|
+| <img src="https://github.com/user-attachments/assets/203ef328-d49f-42bb-b651-de827c78f4a5" alt="WechatIMG119" width="300"> | <img src="https://github.com/user-attachments/assets/e9d732c9-6bab-4717-9c49-b01f1e06dd48" alt="WechatIMG119" width="300"> |
 
 ### 飞书群
 
@@ -1045,7 +1081,7 @@ npx mcporter list xiaohongshu-mcp
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/ctrlz526"><img src="https://avatars.githubusercontent.com/u/143257420?v=4?s=100" width="100px;" alt="Ctrlz"/><br /><sub><b>Ctrlz</b></sub></a><br /><a href="https://github.com/xpzouying/xiaohongshu-mcp/commits?author=ctrlz526" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/flippancy"><img src="https://avatars.githubusercontent.com/u/6467703?v=4?s=100" width="100px;" alt="flippancy"/><br /><sub><b>flippancy</b></sub></a><br /><a href="https://github.com/xpzouying/xiaohongshu-mcp/commits?author=flippancy" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/Infinityay"><img src="https://avatars.githubusercontent.com/u/103165980?v=4?s=100" width="100px;" alt="Yuhang Lu"/><br /><sub><b>Yuhang Lu</b></sub></a><br /><a href="https://github.com/xpzouying/xiaohongshu-mcp/commits?author=Infinityay" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://triepod.ai"><img src="https://avatars.githubusercontent.com/u/199543909?v=4?s=100" width="100px;" alt="Bryan Thompson"/><br /><sub><b>Bryan Thompson</b></sub></a><br /><a href="https://github.com/xpzouying/xiaohongshu-mcp/commits?author=triepod-ai" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://triepod.ai"><img src="https://avatars.githubusercontent.com/u/199543909?v=4?s=100" width="100px;" alt="Bryan Thompson"/><br /><sub><b>Bryan Thompson</b></sub></a><br /><a href="https://github.com/xpzouying/xiaohongshu-mcp/commits?author=bryankthompson" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="http://www.megvii.com"><img src="https://avatars.githubusercontent.com/u/7806992?v=4?s=100" width="100px;" alt="tan jun"/><br /><sub><b>tan jun</b></sub></a><br /><a href="https://github.com/xpzouying/xiaohongshu-mcp/commits?author=tanxxjun321" title="Code">💻</a></td>
     </tr>
     <tr>
@@ -1055,6 +1091,10 @@ npx mcporter list xiaohongshu-mcp
       <td align="center" valign="top" width="14.28%"><a href="https://www.hnfnu.edu.cn/"><img src="https://avatars.githubusercontent.com/u/134906805?v=4?s=100" width="100px;" alt="e0_7"/><br /><sub><b>e0_7</b></sub></a><br /><a href="https://github.com/xpzouying/xiaohongshu-mcp/commits?author=Daily-AC" title="Code">💻</a> <a href="https://github.com/xpzouying/xiaohongshu-mcp/commits?author=Daily-AC" title="Documentation">📖</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/prehisle"><img src="https://avatars.githubusercontent.com/u/2081344?v=4?s=100" width="100px;" alt="prehisle"/><br /><sub><b>prehisle</b></sub></a><br /><a href="https://github.com/xpzouying/xiaohongshu-mcp/commits?author=prehisle" title="Code">💻</a> <a href="https://github.com/xpzouying/xiaohongshu-mcp/commits?author=prehisle" title="Documentation">📖</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/blablabiu"><img src="https://avatars.githubusercontent.com/u/123888078?v=4?s=100" width="100px;" alt="Xinhao Chen"/><br /><sub><b>Xinhao Chen</b></sub></a><br /><a href="https://github.com/xpzouying/xiaohongshu-mcp/commits?author=blablabiu" title="Code">💻</a> <a href="https://github.com/xpzouying/xiaohongshu-mcp/commits?author=blablabiu" title="Documentation">📖</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/qiuxsgit"><img src="https://avatars.githubusercontent.com/u/15036686?v=4?s=100" width="100px;" alt="qiuxsgit"/><br /><sub><b>qiuxsgit</b></sub></a><br /><a href="https://github.com/xpzouying/xiaohongshu-mcp/commits?author=qiuxsgit" title="Code">💻</a></td>
+    </tr>
+    <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/ZhuYichuan"><img src="https://avatars.githubusercontent.com/u/7954801?v=4?s=100" width="100px;" alt="openlts"/><br /><sub><b>openlts</b></sub></a><br /><a href="https://github.com/xpzouying/xiaohongshu-mcp/commits?author=ZhuYichuan" title="Code">💻</a></td>
     </tr>
   </tbody>
 </table>
@@ -1077,3 +1117,11 @@ npx mcporter list xiaohongshu-mcp
 </table>
 
 本项目遵循 [all-contributors](https://github.com/all-contributors/all-contributors) 规范。欢迎任何形式的贡献！
+
+## 📄 许可证
+
+本项目采用 [Apache License 2.0](LICENSE) 开源。
+
+你可以自由地使用、修改和分发本项目，包括用于商业用途，只需保留原始的版权声明和许可证文件。详细条款以 [LICENSE](LICENSE) 文件为准。
+
+向本项目提交的贡献，默认按同一许可证授权。

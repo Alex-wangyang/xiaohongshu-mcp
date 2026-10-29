@@ -82,5 +82,5 @@ func (f *FeedsListAction) GetFeedsList(ctx context.Context) ([]Feed, error) {
 		return nil, err
 	}
 
-	return feeds, nil
+	return onlyNotes(feeds), nil
 }
