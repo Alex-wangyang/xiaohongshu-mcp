@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/xpzouying/xiaohongshu-mcp/humanize"
 )
 
@@ -124,6 +125,13 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 	if err := session.run(readStageNavigate, func(page *rod.Page) error {
 		if err := session.ctx.Err(); err != nil {
 			return err
+		}
+		// Enable request observation before navigation. Keeping it enabled for
+		// this page avoids toggling the domain between serialized filter clicks.
+		if len(pending) > 0 {
+			if err := (proto.NetworkEnable{}).Call(page); err != nil {
+				return err
+			}
 		}
 		return page.Navigate(searchURL)
 	}); err != nil {

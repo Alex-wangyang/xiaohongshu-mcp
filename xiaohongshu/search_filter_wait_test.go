@@ -3,6 +3,7 @@ package xiaohongshu
 import (
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/stretchr/testify/require"
+	"regexp"
 	"testing"
 )
 
@@ -47,4 +48,12 @@ func TestSearchFilterCompletionMatchesObservedV2Request(t *testing.T) {
 	s.response(&proto.NetworkResponseReceived{RequestID: "v2", Response: &proto.NetworkResponse{Status: 200}})
 	require.True(t, s.finished(&proto.NetworkLoadingFinished{RequestID: "v2"}))
 	require.NoError(t, s.result())
+}
+
+func TestSearchFilterIdlePattern(t *testing.T) {
+	pattern, err := regexp.Compile(searchNotesURLPattern)
+	require.NoError(t, err)
+	require.True(t, pattern.MatchString("https://edith.xiaohongshu.com/api/sns/web/v2/search/notes"))
+	require.True(t, pattern.MatchString("https://edith.xiaohongshu.com/api/sns/web/v1/search/notes?page=1"))
+	require.False(t, pattern.MatchString("https://edith.xiaohongshu.com/api/sns/web/v1/search/notes-other"))
 }

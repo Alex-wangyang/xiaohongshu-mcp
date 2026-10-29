@@ -13,7 +13,7 @@ import (
 
 const searchNotesPath = "/api/sns/web/v1/search/notes"
 const searchNotesV2Path = "/api/sns/web/v2/search/notes"
-const searchNotesURLPattern = `/api/sns/web/v[12]/search/notes(?:\?|$)`
+const searchNotesURLPattern = `/api/sns/web/v[12]/search/notes(\?|$)`
 
 // A filter can legitimately return the same notes or no notes. Completion is
 // therefore tied to its own network request, never to changing note IDs.
